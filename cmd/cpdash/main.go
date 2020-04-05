@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 )
 
 func main() {
@@ -42,9 +43,11 @@ func main() {
 	p, channel := lib.Produce(bucket, prefix, concurrency, limit, sess)
 	var consumerWg sync.WaitGroup
 	var stdoutLoggerMutex sync.Mutex
+	stdoutLogger := log.New(os.Stdout, "", 0)
+	downloader := s3manager.NewDownloader(sess)
 	for i := uint(0); i < concurrency; i++ {
 		consumerWg.Add(1)
-		go lib.Consume(bucket, channel, prepend, &consumerWg, &stdoutLoggerMutex, sess)
+		go lib.Consume(bucket, channel, prepend, &consumerWg, stdoutLogger, &stdoutLoggerMutex, downloader)
 	}
 	consumerWg.Wait()
 

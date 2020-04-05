@@ -19,11 +19,9 @@ import (
 	"compress/gzip"
 	"io/ioutil"
 	"log"
-	"os"
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 )
@@ -38,13 +36,13 @@ type consumer struct {
 	wg                *sync.WaitGroup
 }
 
-func Consume(bucket string, channel <-chan string, prepend bool, wg *sync.WaitGroup, stdoutLoggerMutex *sync.Mutex, sess *session.Session) {
+func Consume(bucket string, channel <-chan string, prepend bool, wg *sync.WaitGroup, stdoutLogger *log.Logger, stdoutLoggerMutex *sync.Mutex, downloader *s3manager.Downloader) {
 	c := consumer{
 		bucket:            bucket,
 		channel:           channel,
-		downloader:        s3manager.NewDownloader(sess),
+		downloader:        downloader,
 		prepend:           prepend,
-		stdoutLogger:      log.New(os.Stdout, "", 0),
+		stdoutLogger:      stdoutLogger,
 		stdoutLoggerMutex: stdoutLoggerMutex,
 		wg:                wg,
 	}
