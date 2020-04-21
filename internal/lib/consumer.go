@@ -66,6 +66,7 @@ func (c *consumer) consume() {
 		if err != nil {
 			switch err.Error() {
 			case "EOF":
+				c.logContent(key, []byte{})
 			case "gzip: invalid header":
 				c.logContent(key, f.Bytes())
 			default:
@@ -84,12 +85,14 @@ func (c *consumer) consume() {
 }
 
 func (c *consumer) logContent(key string, content []byte) {
-	if c.prepend {
+	if c.prepend && len(content) > 0 {
 		c.stdoutLoggerMutex.Lock()
-		c.stdoutLogger.Printf("---------- downloading from key %v ----------", key)
-		c.stdoutLogger.Printf("%s", content)
-		c.stdoutLoggerMutex.Unlock()
-	} else {
+		defer c.stdoutLoggerMutex.Unlock()
+	}
+	if c.prepend {
+		c.stdoutLogger.Printf("---------- content of s3://%v/%v ----------", c.bucket, key)
+	}
+	if len(content) > 0 {
 		c.stdoutLogger.Printf("%s", content)
 	}
 }
