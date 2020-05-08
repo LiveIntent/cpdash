@@ -59,14 +59,10 @@ func main() {
 
 func getArgs() (bool, int64, uint, url.URL) {
 	concurrency := flag.Uint("P", 32, "concurrent requests")
-	limit := flag.Int64("l", 100*1024*1024, "download limit")
+	limit := flag.Uint64("l", 100*1024*1024, "download limit")
 	force := flag.Bool("f", false, "disable download limit")
 	prepend := flag.Bool("k", false, "print keys")
 	flag.Parse()
-	if *limit < 0 {
-		log.Println("download limit must be non-negative")
-		os.Exit(1)
-	}
 	if *force {
 		*limit = math.MaxInt64
 	}

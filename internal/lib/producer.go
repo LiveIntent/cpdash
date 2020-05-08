@@ -24,14 +24,14 @@ import (
 
 type producer struct {
 	bucket          string
-	BytesDownloaded int64
+	BytesDownloaded uint64
 	channel         chan<- string
-	limit           int64
+	limit           uint64
 	prefix          string
 	svc             *s3.S3
 }
 
-func Produce(bucket string, prefix string, concurrency uint, limit int64, sess *session.Session) (*producer, <-chan string) {
+func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess *session.Session) (*producer, <-chan string) {
 	channel := make(chan string, concurrency)
 
 	p := producer{
@@ -77,7 +77,7 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input) (*string, bool) {
 
 	for _, object := range result.Contents {
 		p.channel <- *object.Key
-		p.BytesDownloaded += *object.Size
+		p.BytesDownloaded += uint64(*object.Size)
 		if p.BytesDownloaded > p.limit {
 			return nil, false
 		}
