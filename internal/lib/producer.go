@@ -16,6 +16,7 @@ package lib
 
 import (
 	"log"
+	"regexp"
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -29,9 +30,10 @@ type producer struct {
 	limit           uint64
 	prefix          string
 	svc             *s3.S3
+	re              *regexp.Regexp
 }
 
-func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess *session.Session) (*producer, <-chan string) {
+func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess *session.Session, re *regexp.Regexp) (*producer, <-chan string) {
 	channel := make(chan string, concurrency)
 
 	p := producer{
@@ -41,6 +43,7 @@ func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess 
 		limit:           limit,
 		prefix:          prefix,
 		svc:             s3.New(sess),
+		re:              re,
 	}
 
 	go p.produce()
@@ -76,10 +79,12 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input) (*string, bool) {
 	}
 
 	for _, object := range result.Contents {
-		p.channel <- *object.Key
-		p.BytesDownloaded += uint64(*object.Size)
-		if p.BytesDownloaded > p.limit {
-			return nil, false
+		if p.re == nil || p.re.MatchString((*object.Key)[len(p.prefix):]) {
+			p.channel <- *object.Key
+			p.BytesDownloaded += uint64(*object.Size)
+			if p.BytesDownloaded > p.limit {
+				return nil, false
+			}
 		}
 	}
 

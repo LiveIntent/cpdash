@@ -21,6 +21,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"regexp"
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -28,7 +29,7 @@ import (
 )
 
 func main() {
-	prepend, limit, concurrency, url := getArgs()
+	prepend, limit, concurrency, url, re := getArgs()
 	if url.Scheme != "s3" {
 		panic("scheme must be s3")
 	}
@@ -40,7 +41,7 @@ func main() {
 		SharedConfigState: session.SharedConfigEnable,
 	}))
 
-	p, channel := lib.Produce(bucket, prefix, concurrency, limit, sess)
+	p, channel := lib.Produce(bucket, prefix, concurrency, limit, sess, re)
 	var consumerWg sync.WaitGroup
 	var stdoutLoggerMutex sync.Mutex
 	stdoutLogger := log.New(os.Stdout, "", 0)
@@ -57,7 +58,7 @@ func main() {
 	}
 }
 
-func getArgs() (bool, int64, uint, url.URL) {
+func getArgs() (bool, uint64, uint, url.URL, *regexp.Regexp) {
 	concurrency := flag.Uint("P", 32, "concurrent requests")
 	limit := flag.Uint64("l", 100*1024*1024, "download limit")
 	force := flag.Bool("f", false, "disable download limit")
@@ -72,7 +73,14 @@ func getArgs() (bool, int64, uint, url.URL) {
 		if err != nil {
 			panic(err)
 		}
-		return *prepend, *limit, *concurrency, *url
+		return *prepend, *limit, *concurrency, *url, nil
+	case 2:
+		url, err := url.Parse(flag.Arg(0))
+		if err != nil {
+			panic(err)
+		}
+		re := regexp.MustCompile(flag.Arg(1))
+		return *prepend, *limit, *concurrency, *url, re
 	default:
 		panic("supply precisely one cli argument")
 	}
