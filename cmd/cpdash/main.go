@@ -29,7 +29,7 @@ import (
 )
 
 func main() {
-	prepend, limit, concurrency, url, re := getArgs()
+	prepend, limit, concurrency, url, res, delimiter, nonRecursive := getArgs()
 	if url.Scheme != "s3" {
 		panic("scheme must be s3")
 	}
@@ -41,7 +41,7 @@ func main() {
 		SharedConfigState: session.SharedConfigEnable,
 	}))
 
-	p, channel := lib.Produce(bucket, prefix, concurrency, limit, sess, re)
+	p, channel := lib.Produce(bucket, prefix, concurrency, limit, sess, res, delimiter, nonRecursive)
 	var consumerWg sync.WaitGroup
 	var stdoutLoggerMutex sync.Mutex
 	stdoutLogger := log.New(os.Stdout, "", 0)
@@ -58,30 +58,40 @@ func main() {
 	}
 }
 
-func getArgs() (bool, uint64, uint, url.URL, *regexp.Regexp) {
+func getArgs() (bool, uint64, uint, url.URL, []regexp.Regexp, string, bool) {
 	concurrency := flag.Uint("P", 32, "concurrent requests")
+	delimiter := flag.String("d", "/", "s3 key delimiter")
 	limit := flag.Uint64("l", 100*1024*1024, "download limit")
 	force := flag.Bool("f", false, "disable download limit")
+	nonRecursive := flag.Bool("non-recursive", false, "disable recursive search")
 	prepend := flag.Bool("k", false, "print keys")
 	flag.Parse()
 	if *force {
 		*limit = math.MaxInt64
 	}
-	switch flag.NArg() {
-	case 1:
-		url, err := url.Parse(flag.Arg(0))
-		if err != nil {
-			panic(err)
+	nArg := flag.NArg()
+	if nArg < 1 {
+		panic("supply at least one positional argument")
+	} else if nArg == 1 {
+		url := getUrl(flag.Arg(0))
+		re := regexp.MustCompile("")
+		res := []regexp.Regexp{*re}
+		return *prepend, *limit, *concurrency, *url, res, *delimiter, *nonRecursive
+	} else {
+		args := flag.Args()
+		url := getUrl(args[0])
+		res := make([]regexp.Regexp, len(args)-1)
+		for i, v := range args[1:] {
+			res[i] = *regexp.MustCompile(v)
 		}
-		return *prepend, *limit, *concurrency, *url, nil
-	case 2:
-		url, err := url.Parse(flag.Arg(0))
-		if err != nil {
-			panic(err)
-		}
-		re := regexp.MustCompile(flag.Arg(1))
-		return *prepend, *limit, *concurrency, *url, re
-	default:
-		panic("supply precisely one cli argument")
+		return *prepend, *limit, *concurrency, *url, res, *delimiter, *nonRecursive
 	}
+}
+
+func getUrl(arg string) *url.URL {
+	url, err := url.Parse(flag.Arg(0))
+	if err != nil {
+		panic(err)
+	}
+	return url
 }

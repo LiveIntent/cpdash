@@ -28,12 +28,12 @@ type producer struct {
 	BytesDownloaded uint64
 	channel         chan<- string
 	limit           uint64
-	prefix          string
 	svc             *s3.S3
-	re              *regexp.Regexp
+	delimiter       string
+	nonRecursive    bool
 }
 
-func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess *session.Session, re *regexp.Regexp) (*producer, <-chan string) {
+func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool) (*producer, <-chan string) {
 	channel := make(chan string, concurrency)
 
 	p := producer{
@@ -41,30 +41,40 @@ func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess 
 		BytesDownloaded: 0,
 		channel:         channel,
 		limit:           limit,
-		prefix:          prefix,
 		svc:             s3.New(sess),
-		re:              re,
+		delimiter:       delimiter,
+		nonRecursive:    nonRecursive,
 	}
 
-	go p.produce()
+	go p.produce(prefix, res, true)
 
 	return &p, channel
 }
 
-func (p *producer) produce() {
-	defer close(p.channel)
-	input := &s3.ListObjectsV2Input{
-		Bucket: &p.bucket,
-		Prefix: &p.prefix,
+func (p *producer) produce(prefix string, res []regexp.Regexp, root bool) {
+	if root {
+		defer close(p.channel)
 	}
-	continuationToken, ok := p.walk_page(input)
+	var delimiter *string
+	if len(res) > 1 || p.nonRecursive {
+		delimiter = &p.delimiter
+	} else {
+		delimiter = nil
+	}
+	input := &s3.ListObjectsV2Input{
+		Bucket:    &p.bucket,
+		Prefix:    &prefix,
+		Delimiter: delimiter,
+	}
+	continuationToken, ok := p.walk_page(input, res)
 	for ok {
 		input.ContinuationToken = continuationToken
-		continuationToken, ok = p.walk_page(input)
+		continuationToken, ok = p.walk_page(input, res)
 	}
 }
 
-func (p *producer) walk_page(input *s3.ListObjectsV2Input) (*string, bool) {
+func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) (*string, bool) {
+	inputPrefix := *input.Prefix
 	result, err := p.svc.ListObjectsV2(input)
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
@@ -78,15 +88,26 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input) (*string, bool) {
 		log.Panic(err)
 	}
 
-	for _, object := range result.Contents {
-		if p.re == nil || p.re.MatchString((*object.Key)[len(p.prefix):]) {
-			p.channel <- *object.Key
-			if *object.Size < 0 {
-				log.Panicf("*object.Size < 0: %v", object)
+	if len(res) <= 1 {
+		for _, object := range result.Contents {
+			key := *object.Key
+			if res[0].MatchString(key[len(inputPrefix):]) {
+				p.channel <- key
+				size := *object.Size
+				if size < 0 {
+					log.Panicf("*object.Size < 0: %v", object)
+				}
+				p.BytesDownloaded += uint64(size)
+				if p.BytesDownloaded > p.limit {
+					return nil, false
+				}
 			}
-			p.BytesDownloaded += uint64(*object.Size)
-			if p.BytesDownloaded > p.limit {
-				return nil, false
+		}
+	} else {
+		for _, commonPrefix := range result.CommonPrefixes {
+			prefix := *commonPrefix.Prefix
+			if res[0].MatchString(prefix[len(inputPrefix):]) {
+				p.produce(prefix, res[1:], false)
 			}
 		}
 	}
