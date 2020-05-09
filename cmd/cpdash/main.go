@@ -29,7 +29,7 @@ import (
 )
 
 func main() {
-	prepend, limit, concurrency, url, res, delimiter, nonRecursive := getArgs()
+	prepend, limit, concurrency, url, res, delimiter, nonRecursive, list := getArgs()
 	if url.Scheme != "s3" {
 		panic("scheme must be s3")
 	}
@@ -41,7 +41,7 @@ func main() {
 		SharedConfigState: session.SharedConfigEnable,
 	}))
 
-	p, channel := lib.Produce(bucket, prefix, concurrency, limit, sess, res, delimiter, nonRecursive)
+	p, channel := lib.Produce(bucket, prefix, concurrency, limit, sess, res, delimiter, nonRecursive, list)
 	var consumerWg sync.WaitGroup
 	var stdoutLoggerMutex sync.Mutex
 	stdoutLogger := log.New(os.Stdout, "", 0)
@@ -58,10 +58,11 @@ func main() {
 	}
 }
 
-func getArgs() (bool, uint64, uint, url.URL, []regexp.Regexp, string, bool) {
+func getArgs() (bool, uint64, uint, url.URL, []regexp.Regexp, string, bool, bool) {
 	concurrency := flag.Uint("P", 32, "concurrent requests")
 	delimiter := flag.String("d", "/", "s3 key delimiter")
 	limit := flag.Uint64("l", 100*1024*1024, "download limit")
+	list := flag.Bool("list", false, "only list keys")
 	force := flag.Bool("f", false, "disable download limit")
 	nonRecursive := flag.Bool("non-recursive", false, "disable recursive search")
 	prepend := flag.Bool("k", false, "print keys")
@@ -76,7 +77,7 @@ func getArgs() (bool, uint64, uint, url.URL, []regexp.Regexp, string, bool) {
 		url := getUrl(flag.Arg(0))
 		re := regexp.MustCompile("")
 		res := []regexp.Regexp{*re}
-		return *prepend, *limit, *concurrency, *url, res, *delimiter, *nonRecursive
+		return *prepend, *limit, *concurrency, *url, res, *delimiter, *nonRecursive, *list
 	} else {
 		args := flag.Args()
 		url := getUrl(args[0])
@@ -84,7 +85,7 @@ func getArgs() (bool, uint64, uint, url.URL, []regexp.Regexp, string, bool) {
 		for i, v := range args[1:] {
 			res[i] = *regexp.MustCompile(v)
 		}
-		return *prepend, *limit, *concurrency, *url, res, *delimiter, *nonRecursive
+		return *prepend, *limit, *concurrency, *url, res, *delimiter, *nonRecursive, *list
 	}
 }
 

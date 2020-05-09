@@ -15,6 +15,7 @@
 package lib
 
 import (
+	"fmt"
 	"log"
 	"regexp"
 
@@ -31,9 +32,10 @@ type producer struct {
 	svc             *s3.S3
 	delimiter       string
 	nonRecursive    bool
+	list            bool
 }
 
-func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool) (*producer, <-chan string) {
+func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan string) {
 	channel := make(chan string, concurrency)
 
 	p := producer{
@@ -44,6 +46,7 @@ func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess 
 		svc:             s3.New(sess),
 		delimiter:       delimiter,
 		nonRecursive:    nonRecursive,
+		list:            list,
 	}
 
 	go p.produce(prefix, res, true)
@@ -92,7 +95,11 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) 
 		for _, object := range result.Contents {
 			key := *object.Key
 			if res[0].MatchString(key[len(inputPrefix):]) {
-				p.channel <- key
+				if p.list {
+					fmt.Printf("s3://%s/%s\n", p.bucket, key)
+				} else {
+					p.channel <- key
+				}
 				size := *object.Size
 				if size < 0 {
 					log.Panicf("*object.Size < 0: %v", object)
