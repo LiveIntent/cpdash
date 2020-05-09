@@ -81,6 +81,9 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input) (*string, bool) {
 	for _, object := range result.Contents {
 		if p.re == nil || p.re.MatchString((*object.Key)[len(p.prefix):]) {
 			p.channel <- *object.Key
+			if *object.Size < 0 {
+				log.Panicf("*object.Size < 0: %v", object)
+			}
 			p.BytesDownloaded += uint64(*object.Size)
 			if p.BytesDownloaded > p.limit {
 				return nil, false
