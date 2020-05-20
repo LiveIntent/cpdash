@@ -99,14 +99,14 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) 
 					fmt.Printf("s3://%s/%s\n", p.bucket, key)
 				} else {
 					p.channel <- key
-				}
-				size := *object.Size
-				if size < 0 {
-					log.Panicf("*object.Size < 0: %v", object)
-				}
-				p.BytesDownloaded += uint64(size)
-				if p.BytesDownloaded > p.limit {
-					return nil, false
+					size := *object.Size
+					if size < 0 {
+						log.Panicf("*object.Size < 0: %v", object)
+					}
+					p.BytesDownloaded += uint64(size)
+					if p.BytesDownloaded > p.limit {
+						return nil, false
+					}
 				}
 			}
 		}
