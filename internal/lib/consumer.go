@@ -26,73 +26,46 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 )
 
-type consumer struct {
-	bucket            string
-	channel           <-chan string
-	downloader        *s3manager.Downloader
-	prepend           bool
-	stdoutLogger      *log.Logger
-	stdoutLoggerMutex *sync.Mutex
-	wg                *sync.WaitGroup
-}
-
-func Consume(bucket string, channel <-chan string, prepend bool, wg *sync.WaitGroup, stdoutLogger *log.Logger, stdoutLoggerMutex *sync.Mutex, downloader *s3manager.Downloader) {
-	c := consumer{
-		bucket:            bucket,
-		channel:           channel,
-		downloader:        downloader,
-		prepend:           prepend,
-		stdoutLogger:      stdoutLogger,
-		stdoutLoggerMutex: stdoutLoggerMutex,
-		wg:                wg,
+func Consume(bucket string, key string, prepend bool, logger *log.Logger, mu *sync.Mutex, downloader *s3manager.Downloader) {
+	f := aws.NewWriteAtBuffer([]byte{})
+	_, dErr := downloader.Download(f, &s3.GetObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+	})
+	if dErr != nil {
+		log.Panicf("failed to download file, %v", dErr)
 	}
-	c.consume()
-}
 
-func (c *consumer) consume() {
-	defer c.wg.Done()
-
-	for key := range c.channel {
-		f := aws.NewWriteAtBuffer([]byte{})
-		_, dErr := c.downloader.Download(f, &s3.GetObjectInput{
-			Bucket: &c.bucket,
-			Key:    &key,
-		})
-		if dErr != nil {
-			log.Panicf("failed to download file, %v", dErr)
-		}
-
-		reader, err := gzip.NewReader(bytes.NewBuffer(f.Bytes()))
-		if err != nil {
-			switch err.Error() {
-			case "EOF":
-				c.logContent(key, []byte{})
-			case "gzip: invalid header":
-				c.logContent(key, f.Bytes())
-			default:
-				log.Panic(err)
-			}
-			continue
-		}
-		defer reader.Close()
-
-		content, err := ioutil.ReadAll(reader)
-		if err != nil {
+	reader, err := gzip.NewReader(bytes.NewBuffer(f.Bytes()))
+	if err != nil {
+		switch err.Error() {
+		case "EOF":
+			logContent(bucket, key, []byte{}, prepend, logger, mu)
+		case "gzip: invalid header":
+			logContent(bucket, key, f.Bytes(), prepend, logger, mu)
+		default:
 			log.Panic(err)
 		}
-		c.logContent(key, content)
+		return
 	}
+	defer reader.Close()
+
+	content, err := ioutil.ReadAll(reader)
+	if err != nil {
+		log.Panic(err)
+	}
+	logContent(bucket, key, content, prepend, logger, mu)
 }
 
-func (c *consumer) logContent(key string, content []byte) {
-	if c.prepend && len(content) > 0 {
-		c.stdoutLoggerMutex.Lock()
-		defer c.stdoutLoggerMutex.Unlock()
+func logContent(bucket string, key string, content []byte, prepend bool, logger *log.Logger, mu *sync.Mutex) {
+	if prepend && len(content) > 0 {
+		mu.Lock()
+		defer mu.Unlock()
 	}
-	if c.prepend {
-		c.stdoutLogger.Printf("---------- content of s3://%v/%v ----------", c.bucket, key)
+	if prepend {
+		logger.Printf("---------- content of s3://%v/%v ----------", bucket, key)
 	}
 	if len(content) > 0 {
-		c.stdoutLogger.Printf("%s", content)
+		logger.Printf("%s", content)
 	}
 }
