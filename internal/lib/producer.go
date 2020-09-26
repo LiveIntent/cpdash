@@ -35,8 +35,8 @@ type producer struct {
 	list            bool
 }
 
-func Produce(bucket string, prefix string, concurrency uint, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan string) {
-	channel := make(chan string, concurrency)
+func Produce(bucket string, prefix string, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan string) {
+	channel := make(chan string)
 
 	p := producer{
 		bucket:          bucket,
@@ -96,7 +96,7 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) 
 			key := *object.Key
 			if res[0].MatchString(key[len(inputPrefix):]) {
 				if p.list {
-					fmt.Printf("s3://%s/%s\n", p.bucket, key)
+					fmt.Printf("s3://%v/%v\n", p.bucket, key)
 				} else {
 					p.channel <- key
 					size := *object.Size
