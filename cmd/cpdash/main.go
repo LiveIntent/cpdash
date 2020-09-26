@@ -22,77 +22,95 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 )
 
-func main() {
-	prepend, limit, concurrency, url, res, delimiter, nonRecursive, list := getArgs()
-	if url.Scheme != "s3" {
-		panic("scheme must be s3")
-	}
+var concurrency uint
+var delimiter string
+var limit uint64
+var list bool
+var nonRecursive bool
+var prepend bool
 
+var bucket string
+var prefix string
+var res []regexp.Regexp
+
+var sess *session.Session = session.Must(session.NewSessionWithOptions(session.Options{
+	SharedConfigState: session.SharedConfigEnable,
+}))
+
+func init() {
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC | log.Lshortfile)
-	bucket := url.Host
-	prefix := url.Path[1:]
-	sess := session.Must(session.NewSessionWithOptions(session.Options{
-		SharedConfigState: session.SharedConfigEnable,
-	}))
 
-	p, channel := lib.Produce(bucket, prefix, concurrency, limit, sess, res, delimiter, nonRecursive, list)
-	var consumerWg sync.WaitGroup
-	var stdoutLoggerMutex sync.Mutex
-	stdoutLogger := log.New(os.Stdout, "", 0)
-	downloader := s3manager.NewDownloader(sess)
-	for i := uint(0); i < concurrency; i++ {
-		consumerWg.Add(1)
-		go lib.Consume(bucket, channel, prepend, &consumerWg, stdoutLogger, &stdoutLoggerMutex, downloader)
+	flag.UintVar(&concurrency, "P", 32, "concurrent requests")
+	flag.StringVar(&delimiter, "d", "/", "s3 key delimiter")
+	flag.Uint64Var(&limit, "l", 100*1024*1024, "download limit")
+	flag.BoolVar(&list, "list", false, "only list keys")
+	flag.BoolVar(&nonRecursive, "non-recursive", false, "disable recursive search")
+	flag.BoolVar(&prepend, "k", false, "print keys")
+
+	force := flag.Bool("f", false, "disable download limit")
+
+	flag.Parse()
+
+	if *force {
+		limit = math.MaxInt64
 	}
-	consumerWg.Wait()
+
+	url, err := url.Parse(flag.Arg(0))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if url.Scheme != "s3" {
+		log.Fatal("scheme must be s3")
+	}
+	bucket = url.Host
+	prefix = url.Path[1:]
+
+	nArg := flag.NArg()
+	if nArg < 1 {
+		log.Fatal("supply at least one positional argument")
+	} else if nArg == 1 {
+		re := regexp.MustCompile("")
+		res = []regexp.Regexp{*re}
+	} else {
+		args := flag.Args()
+		res = make([]regexp.Regexp, len(args)-1)
+		for i, v := range args[1:] {
+			res[i] = *regexp.MustCompile(v)
+		}
+	}
+}
+
+func main() {
+	runtime.GOMAXPROCS(1)
+
+	p, keys := lib.Produce(bucket, prefix, limit, sess, res, delimiter, nonRecursive, list)
+
+	var mu sync.Mutex
+	logger := log.New(os.Stdout, "", 0)
+	downloader := s3manager.NewDownloader(sess)
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+	for key := range keys {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(key string) {
+			lib.Consume(bucket, key, prepend, logger, &mu, downloader)
+			wg.Done()
+			<-sem
+		}(key)
+	}
+	wg.Wait()
 
 	if p.BytesDownloaded > limit {
 		log.Printf("exceeded download limit %v, downloaded %v bytes", limit, p.BytesDownloaded)
 		os.Exit(1)
 	}
-}
-
-func getArgs() (bool, uint64, uint, url.URL, []regexp.Regexp, string, bool, bool) {
-	concurrency := flag.Uint("P", 32, "concurrent requests")
-	delimiter := flag.String("d", "/", "s3 key delimiter")
-	limit := flag.Uint64("l", 100*1024*1024, "download limit")
-	list := flag.Bool("list", false, "only list keys")
-	force := flag.Bool("f", false, "disable download limit")
-	nonRecursive := flag.Bool("non-recursive", false, "disable recursive search")
-	prepend := flag.Bool("k", false, "print keys")
-	flag.Parse()
-	if *force {
-		*limit = math.MaxInt64
-	}
-	nArg := flag.NArg()
-	if nArg < 1 {
-		panic("supply at least one positional argument")
-	} else if nArg == 1 {
-		url := getUrl(flag.Arg(0))
-		re := regexp.MustCompile("")
-		res := []regexp.Regexp{*re}
-		return *prepend, *limit, *concurrency, *url, res, *delimiter, *nonRecursive, *list
-	} else {
-		args := flag.Args()
-		url := getUrl(args[0])
-		res := make([]regexp.Regexp, len(args)-1)
-		for i, v := range args[1:] {
-			res[i] = *regexp.MustCompile(v)
-		}
-		return *prepend, *limit, *concurrency, *url, res, *delimiter, *nonRecursive, *list
-	}
-}
-
-func getUrl(arg string) *url.URL {
-	url, err := url.Parse(flag.Arg(0))
-	if err != nil {
-		panic(err)
-	}
-	return url
 }
