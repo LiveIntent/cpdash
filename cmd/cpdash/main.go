@@ -69,6 +69,9 @@ func init() {
 	if url.Scheme != "s3" {
 		log.Fatal("scheme must be s3")
 	}
+	if url.Path == "" {
+		log.Fatal("prefix missing in s3 url, must have the form 's3://<bucket>/<prefix>'")
+	}
 	bucket = url.Host
 	prefix = url.Path[1:]
 
