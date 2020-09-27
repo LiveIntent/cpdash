@@ -15,8 +15,11 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"cpdash/internal/lib"
 	"flag"
+	"io/ioutil"
 	"log"
 	"math"
 	"net/url"
@@ -25,7 +28,9 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 )
 
@@ -43,6 +48,10 @@ var res []regexp.Regexp
 var sess *session.Session = session.Must(session.NewSessionWithOptions(session.Options{
 	SharedConfigState: session.SharedConfigEnable,
 }))
+var downloader = s3manager.NewDownloader(sess)
+
+var mu sync.Mutex
+var logger = log.New(os.Stdout, "", 0)
 
 func init() {
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC | log.Lshortfile)
@@ -95,17 +104,13 @@ func main() {
 
 	p, keys := lib.Produce(bucket, prefix, limit, sess, res, delimiter, nonRecursive, list)
 
-	var mu sync.Mutex
-	logger := log.New(os.Stdout, "", 0)
-	downloader := s3manager.NewDownloader(sess)
-
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
 	for key := range keys {
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(key string) {
-			lib.Consume(bucket, key, prepend, logger, &mu, downloader)
+			consume(key)
 			wg.Done()
 			<-sem
 		}(key)
@@ -115,5 +120,49 @@ func main() {
 	if p.BytesDownloaded > limit {
 		log.Printf("exceeded download limit %v, downloaded %v bytes", limit, p.BytesDownloaded)
 		os.Exit(1)
+	}
+}
+
+func consume(key string) {
+	f := aws.NewWriteAtBuffer([]byte{})
+	_, dErr := downloader.Download(f, &s3.GetObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+	})
+	if dErr != nil {
+		log.Panicf("failed to download file, %v", dErr)
+	}
+
+	reader, err := gzip.NewReader(bytes.NewBuffer(f.Bytes()))
+	if err != nil {
+		switch err.Error() {
+		case "EOF":
+			logContent(key, []byte{})
+		case "gzip: invalid header":
+			logContent(key, f.Bytes())
+		default:
+			log.Panic(err)
+		}
+		return
+	}
+	defer reader.Close()
+
+	content, err := ioutil.ReadAll(reader)
+	if err != nil {
+		log.Panic(err)
+	}
+	logContent(key, content)
+}
+
+func logContent(key string, content []byte) {
+	if prepend && len(content) > 0 {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	if prepend {
+		logger.Printf("---------- content of s3://%v/%v ----------", bucket, key)
+	}
+	if len(content) > 0 {
+		logger.Printf("%s", content)
 	}
 }
