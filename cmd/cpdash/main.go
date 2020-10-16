@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"cpdash/internal/lib"
 	"flag"
 	"io/ioutil"
@@ -32,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"golang.org/x/sync/semaphore"
 )
 
 var concurrency uint
@@ -105,14 +107,15 @@ func main() {
 	p, keys := lib.Produce(bucket, prefix, limit, sess, res, delimiter, nonRecursive, list)
 
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, concurrency)
+	sem := semaphore.NewWeighted(int64(concurrency))
 	for key := range keys {
-		sem <- struct{}{}
+		sem.Acquire(context.TODO(), 1)
 		wg.Add(1)
 		go func(key string) {
+			defer sem.Release(1)
+			defer wg.Done()
+
 			consume(key)
-			wg.Done()
-			<-sem
 		}(key)
 	}
 	wg.Wait()

@@ -16,4 +16,7 @@ module cpdash
 
 go 1.15
 
-require github.com/aws/aws-sdk-go v1.34.32
+require (
+	github.com/aws/aws-sdk-go v1.34.32
+	golang.org/x/sync v0.0.0-20201008141435-b3e1573b7520
+)
