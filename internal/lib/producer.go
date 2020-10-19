@@ -101,17 +101,13 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) 
 			key := *object.Key
 			size := *object.Size
 			if size < 0 {
-				size = 0
+				log.Fatalf("*object.Size < 0: %+v", object)
 			}
 			if res[0].MatchString(key[len(inputPrefix):]) {
 				if p.list {
-					fmt.Printf("s3://%v/%v\n", p.bucket, key)
+					fmt.Printf("s3://%s/%s\n", p.bucket, key)
 				} else {
 					p.channel <- Object{key, uint(size)}
-					size := *object.Size
-					if size < 0 {
-						log.Panicf("*object.Size < 0: %v", object)
-					}
 					p.BytesDownloaded += uint64(size)
 					if p.BytesDownloaded > p.limit {
 						return nil, false
