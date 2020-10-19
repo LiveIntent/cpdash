@@ -27,6 +27,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"runtime/pprof"
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -37,6 +38,7 @@ import (
 )
 
 var concurrency uint
+var cpuprofile string
 var delimiter string
 var limit uint64
 var list bool
@@ -59,6 +61,7 @@ func init() {
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC | log.Lshortfile)
 
 	flag.UintVar(&concurrency, "P", 32, "concurrent requests")
+	flag.StringVar(&cpuprofile, "cpuprofile", "", "generate cpu profile")
 	flag.StringVar(&delimiter, "d", "/", "s3 key delimiter")
 	flag.Uint64Var(&limit, "l", 100*1024*1024, "download limit")
 	flag.BoolVar(&list, "list", false, "only list keys")
@@ -104,19 +107,31 @@ func init() {
 func main() {
 	runtime.GOMAXPROCS(1)
 
+	if cpuprofile != "" {
+		f, err := os.Create(cpuprofile)
+		if err != nil {
+			log.Fatal("could not create CPU profile: ", err)
+		}
+		defer f.Close() // error handling omitted for example
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatal("could not start CPU profile: ", err)
+		}
+		defer pprof.StopCPUProfile()
+	}
+
 	p, keys := lib.Produce(bucket, prefix, limit, sess, res, delimiter, nonRecursive, list)
 
 	var wg sync.WaitGroup
 	sem := semaphore.NewWeighted(int64(concurrency))
-	for key := range keys {
+	for obj := range keys {
 		sem.Acquire(context.TODO(), 1)
 		wg.Add(1)
-		go func(key string) {
+		go func(obj lib.Object) {
 			defer sem.Release(1)
 			defer wg.Done()
 
-			consume(key)
-		}(key)
+			consume(obj.Key, obj.Size)
+		}(obj)
 	}
 	wg.Wait()
 
@@ -126,8 +141,9 @@ func main() {
 	}
 }
 
-func consume(key string) {
-	f := aws.NewWriteAtBuffer([]byte{})
+func consume(key string, size uint) {
+	f := aws.NewWriteAtBuffer(make([]byte, size))
+
 	_, dErr := downloader.Download(f, &s3.GetObjectInput{
 		Bucket: &bucket,
 		Key:    &key,

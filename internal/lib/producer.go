@@ -27,7 +27,7 @@ import (
 type producer struct {
 	bucket          string
 	BytesDownloaded uint64
-	channel         chan<- string
+	channel         chan<- Object
 	limit           uint64
 	svc             *s3.S3
 	delimiter       string
@@ -35,8 +35,13 @@ type producer struct {
 	list            bool
 }
 
-func Produce(bucket string, prefix string, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan string) {
-	channel := make(chan string)
+type Object struct {
+	Key  string
+	Size uint
+}
+
+func Produce(bucket string, prefix string, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan Object) {
+	channel := make(chan Object)
 
 	p := producer{
 		bucket:          bucket,
@@ -94,11 +99,15 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) 
 	if len(res) <= 1 {
 		for _, object := range result.Contents {
 			key := *object.Key
+			size := *object.Size
+			if size < 0 {
+				size = 0
+			}
 			if res[0].MatchString(key[len(inputPrefix):]) {
 				if p.list {
 					fmt.Printf("s3://%v/%v\n", p.bucket, key)
 				} else {
-					p.channel <- key
+					p.channel <- Object{key, uint(size)}
 					size := *object.Size
 					if size < 0 {
 						log.Panicf("*object.Size < 0: %v", object)
