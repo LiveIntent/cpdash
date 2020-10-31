@@ -157,10 +157,10 @@ func consume(key string, size uint) {
 		switch err.Error() {
 		case "EOF":
 			logContent(key, []byte{})
-		case "gzip: invalid header":
+		case "gzip: invalid header", "unexpected EOF":
 			logContent(key, f.Bytes())
 		default:
-			log.Panic(err)
+			log.Panicf("failed while reading %s: %s", key, err)
 		}
 		return
 	}
