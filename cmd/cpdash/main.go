@@ -20,7 +20,8 @@ import (
 	"context"
 	"cpdash/internal/lib"
 	"flag"
-	"io/ioutil"
+	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/url"
@@ -39,11 +40,13 @@ import (
 
 var concurrency uint
 var cpuprofile string
+var memprofile string
 var delimiter string
 var limit uint64
 var list bool
 var nonRecursive bool
 var prepend bool
+var bufferLimit int64
 
 var bucket string
 var prefix string
@@ -53,17 +56,19 @@ var sess *session.Session = session.Must(session.NewSessionWithOptions(session.O
 	SharedConfigState: session.SharedConfigEnable,
 }))
 var downloader = s3manager.NewDownloader(sess)
+var s3Client = s3.New(sess)
 
 var mu sync.Mutex
-var logger = log.New(os.Stdout, "", 0)
 
 func init() {
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC | log.Lshortfile)
 
 	flag.UintVar(&concurrency, "P", 32, "concurrent requests")
 	flag.StringVar(&cpuprofile, "cpuprofile", "", "generate cpu profile")
+	flag.StringVar(&memprofile, "memprofile", "", "generate memory profile")
 	flag.StringVar(&delimiter, "d", "/", "s3 key delimiter")
-	flag.Uint64Var(&limit, "l", 100*1024*1024, "download limit")
+	flag.Uint64Var(&limit, "l", 10*1024*1024*1024, "download limit")
+	flag.Int64Var(&bufferLimit, "b", 1024*1024*1024, "total buffer memory limit")
 	flag.BoolVar(&list, "list", false, "only list keys")
 	flag.BoolVar(&nonRecursive, "non-recursive", false, "disable recursive search")
 	flag.BoolVar(&prepend, "k", false, "print keys")
@@ -119,69 +124,142 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	p, keys := lib.Produce(bucket, prefix, limit, sess, res, delimiter, nonRecursive, list)
+	p, objs, sequentialFuture := lib.Produce(bucket, prefix, limit, sess, res, delimiter, nonRecursive, list)
 
-	var wg sync.WaitGroup
-	sem := semaphore.NewWeighted(int64(concurrency))
-	for obj := range keys {
-		sem.Acquire(context.TODO(), 1)
-		wg.Add(1)
-		go func(obj lib.Object) {
-			defer sem.Release(1)
-			defer wg.Done()
+	sequential := <-sequentialFuture
 
-			consume(obj.Key, obj.Size)
-		}(obj)
+	if concurrency == 1 || sequential {
+		for obj := range objs {
+			consumeSequential(obj)
+		}
+	} else {
+		sem := semaphore.NewWeighted(bufferLimit)
+		var wg sync.WaitGroup
+		for i := uint(0); i < concurrency; i++ {
+			wg.Add(1)
+			go func(objs <-chan lib.Object) {
+				defer wg.Done()
+
+				consume(objs, sem)
+			}(objs)
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 
 	if p.BytesDownloaded > limit {
 		log.Printf("exceeded download limit %v, downloaded %v bytes", limit, p.BytesDownloaded)
 		os.Exit(1)
 	}
+
+	if memprofile != "" {
+		f, err := os.Create(memprofile)
+		if err != nil {
+			log.Fatal("could not create memory profile: ", err)
+		}
+		defer f.Close() // error handling omitted for example
+		runtime.GC()    // get up-to-date statistics
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			log.Fatal("could not write memory profile: ", err)
+		}
+	}
 }
 
-func consume(key string, size uint) {
-	f := aws.NewWriteAtBuffer(make([]byte, size))
+func consume(objs <-chan lib.Object, sem *semaphore.Weighted) {
+	buffer := []byte{}
+	bufSize := int64(0)
 
-	_, dErr := downloader.Download(f, &s3.GetObjectInput{
+	for obj := range objs {
+		key := obj.Key
+		size := obj.Size
+
+		if size > bufferLimit {
+			log.Fatalf("*object.Size > bufferLimit: %+v", obj)
+		}
+
+		if size > int64(cap(buffer)) {
+			buffer = nil
+			sem.Release(bufSize)
+
+			bufSize = size
+			sem.Acquire(context.TODO(), bufSize)
+			buffer = make([]byte, bufSize)
+		}
+		f := aws.NewWriteAtBuffer(buffer[:0])
+
+		_, dErr := downloader.Download(f, &s3.GetObjectInput{
+			Bucket: &bucket,
+			Key:    &key,
+		})
+		if dErr != nil {
+			log.Panicf("failed to download file s3://%s/%s, %v", bucket, key, dErr)
+		}
+
+		logContent(key, bytes.NewBuffer(f.Bytes()))
+	}
+
+	buffer = nil
+	sem.Release(bufSize)
+}
+
+func consumeSequential(obj lib.Object) {
+	key := obj.Key
+	object, err := s3Client.GetObject(&s3.GetObjectInput{
 		Bucket: &bucket,
 		Key:    &key,
 	})
-	if dErr != nil {
-		log.Panicf("failed to download file, %v", dErr)
-	}
-
-	reader, err := gzip.NewReader(bytes.NewBuffer(f.Bytes()))
 	if err != nil {
-		switch err.Error() {
-		case "EOF":
-			logContent(key, []byte{})
-		case "gzip: invalid header", "unexpected EOF":
-			logContent(key, f.Bytes())
-		default:
-			log.Panicf("failed while reading %s: %s", key, err)
-		}
-		return
+		log.Panicf("failed to download file s3://%s/%s, %v", bucket, key, err)
 	}
-	defer reader.Close()
+	body := object.Body
+	defer body.Close()
 
-	content, err := ioutil.ReadAll(reader)
-	if err != nil {
-		log.Panic(err)
-	}
-	logContent(key, content)
+	logContent(key, body)
 }
 
-func logContent(key string, content []byte) {
-	if prepend && len(content) > 0 {
-		mu.Lock()
-		defer mu.Unlock()
+var gzipReader = new(gzip.Reader)
+var headBuffer = bytes.NewBuffer(make([]byte, 0, 256))
+var copyBuffer = make([]byte, 32*1024)
+
+type onlyWriter struct {
+	stdout *os.File
+}
+
+func (o onlyWriter) Write(p []byte) (n int, err error) {
+	return o.stdout.Write(p)
+}
+
+func logContent(key string, body io.Reader) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	headBuffer.Reset()
+	head := io.TeeReader(body, headBuffer)
+
+	var reader io.Reader
+	err := gzipReader.Reset(head)
+	switch err {
+	case nil:
+		err := gzipReader.Reset(io.MultiReader(headBuffer, body))
+		if err != nil {
+			log.Fatalf("failed to download file s3://%s/%s after gzip verification, %v", bucket, key, err)
+		}
+		defer gzipReader.Close()
+		reader = gzipReader
+	case io.EOF:
+	case gzip.ErrHeader, io.ErrUnexpectedEOF:
+		reader = io.MultiReader(headBuffer, body)
+	default:
+		log.Fatalf("failed while reading s3://%s/%s: %s", bucket, key, err)
 	}
+
 	if prepend {
-		logger.Printf("---------- content of s3://%v/%v ----------", bucket, key)
+		fmt.Printf("---------- content of s3://%s/%s ----------", bucket, key)
 	}
-	if len(content) > 0 {
-		logger.Printf("%s", content)
+
+	if reader != nil {
+		_, err = io.CopyBuffer(onlyWriter{os.Stdout}, reader, copyBuffer)
+		if err != nil {
+			log.Fatal("failed while copying to stdout:", err)
+		}
 	}
 }

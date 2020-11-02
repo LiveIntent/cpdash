@@ -25,38 +25,42 @@ import (
 )
 
 type producer struct {
-	bucket          string
-	BytesDownloaded uint64
-	channel         chan<- Object
-	limit           uint64
-	svc             *s3.S3
-	delimiter       string
-	nonRecursive    bool
-	list            bool
+	bucket           string
+	BytesDownloaded  uint64
+	channel          chan<- Object
+	limit            uint64
+	svc              *s3.S3
+	delimiter        string
+	nonRecursive     bool
+	list             bool
+	sequentialFuture chan<- bool
+	objects          uint
 }
 
 type Object struct {
 	Key  string
-	Size uint
+	Size int64
 }
 
-func Produce(bucket string, prefix string, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan Object) {
-	channel := make(chan Object)
+func Produce(bucket string, prefix string, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan Object, <-chan bool) {
+	channel := make(chan Object, 2)
+	sequentialFuture := make(chan bool)
 
 	p := producer{
-		bucket:          bucket,
-		BytesDownloaded: 0,
-		channel:         channel,
-		limit:           limit,
-		svc:             s3.New(sess),
-		delimiter:       delimiter,
-		nonRecursive:    nonRecursive,
-		list:            list,
+		bucket:           bucket,
+		BytesDownloaded:  0,
+		channel:          channel,
+		limit:            limit,
+		svc:              s3.New(sess),
+		delimiter:        delimiter,
+		nonRecursive:     nonRecursive,
+		list:             list,
+		sequentialFuture: sequentialFuture,
 	}
 
 	go p.produce(prefix, res, true)
 
-	return &p, channel
+	return &p, channel, sequentialFuture
 }
 
 func (p *producer) produce(prefix string, res []regexp.Regexp, root bool) {
@@ -78,6 +82,9 @@ func (p *producer) produce(prefix string, res []regexp.Regexp, root bool) {
 	for ok {
 		input.ContinuationToken = continuationToken
 		continuationToken, ok = p.walk_page(input, res)
+	}
+	if p.objects < 2 {
+		p.sequentialFuture <- true
 	}
 }
 
@@ -107,7 +114,11 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) 
 				if p.list {
 					fmt.Printf("s3://%s/%s\n", p.bucket, key)
 				} else {
-					p.channel <- Object{key, uint(size)}
+					p.objects += 1
+					if p.objects == 2 {
+						close(p.sequentialFuture)
+					}
+					p.channel <- Object{key, size}
 					p.BytesDownloaded += uint64(size)
 					if p.BytesDownloaded > p.limit {
 						return nil, false
