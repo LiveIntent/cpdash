@@ -81,18 +81,18 @@ func init() {
 		limit = math.MaxInt64
 	}
 
-	url, err := url.Parse(flag.Arg(0))
+	urlArg, err := url.Parse(flag.Arg(0))
 	if err != nil {
 		log.Fatal(err)
 	}
-	if url.Scheme != "s3" {
+	if urlArg.Scheme != "s3" {
 		log.Fatal("scheme must be s3")
 	}
-	if url.Path == "" {
+	if urlArg.Path == "" {
 		log.Fatal("prefix missing in s3 url, must have the form 's3://<bucket>/<prefix>'")
 	}
-	bucket = url.Host
-	prefix = url.Path[1:]
+	bucket = urlArg.Host
+	prefix = urlArg.EscapedPath()[1:]
 
 	nArg := flag.NArg()
 	if nArg < 1 {
