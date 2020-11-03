@@ -218,13 +218,12 @@ func consumeSequential(obj lib.Object) {
 
 var gzipReader = new(gzip.Reader)
 var headBuffer = bytes.NewBuffer(make([]byte, 0, 256))
-var copyBuffer = make([]byte, 32*1024)
 
 type onlyWriter struct {
 	stdout *os.File
 }
 
-func (o onlyWriter) Write(p []byte) (n int, err error) {
+func (o onlyWriter) Write(p []byte) (int, error) {
 	return o.stdout.Write(p)
 }
 
@@ -257,9 +256,49 @@ func logContent(key string, body io.Reader) {
 	}
 
 	if reader != nil {
-		_, err = io.CopyBuffer(onlyWriter{os.Stdout}, reader, copyBuffer)
+		err := copyBuffer(onlyWriter{os.Stdout}, reader)
 		if err != nil {
-			log.Fatal("failed while copying to stdout:", err)
+			log.Fatalf("failed while copying %s to stdout: %s", key, err)
 		}
 	}
+}
+
+var buf = make([]byte, 32*1024)
+
+func copyBuffer(dst io.Writer, src io.Reader) (err error) {
+	var last byte
+
+	// borrowed mostly from io.copyBuffer
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[0:nr])
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+			last = buf[nr-1]
+		}
+		if er != nil {
+			if er != io.EOF {
+				err = er
+			}
+			break
+		}
+	}
+	if err != nil {
+		return
+	}
+	if last != '\n' {
+		nw, err := dst.Write([]byte{'\n'})
+		if err != nil || nw != 1 {
+			log.Fatalf("failed to write missing newline to stdout, wrote %d bytes: %s", nw, err)
+		}
+	}
+
+	return
 }
