@@ -15,13 +15,16 @@
 
 FROM golang:1.15
 
+ARG goos=linux
+ARG goarch=amd64
+
 WORKDIR /opt/src/cpdash
 COPY . .
 
-RUN CGO_ENABLED=0 go install ./cmd/cpdash
+RUN CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build ./cmd/cpdash
 
 FROM scratch
 
-COPY --from=0 /go/bin/cpdash /usr/local/bin/cpdash
+COPY --from=0 /opt/src/cpdash/cpdash /usr/local/bin/cpdash
 
-ENTRYPOINT [ "cpdash" ]
+ENTRYPOINT [ "/usr/local/bin/cpdash" ]
