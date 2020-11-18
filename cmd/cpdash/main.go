@@ -252,7 +252,7 @@ func logContent(key string, body io.Reader) {
 	}
 
 	if prepend {
-		fmt.Printf("---------- content of s3://%s/%s ----------", bucket, key)
+		fmt.Printf("---------- content of s3://%s/%s ----------\n", bucket, key)
 	}
 
 	if reader != nil {
