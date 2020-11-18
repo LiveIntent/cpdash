@@ -83,7 +83,7 @@ func (p *producer) produce(prefix string, res []regexp.Regexp, root bool) {
 		input.ContinuationToken = continuationToken
 		continuationToken, ok = p.walk_page(input, res)
 	}
-	if p.objects < 2 {
+	if root && p.objects < 2 {
 		p.sequentialFuture <- true
 	}
 }
