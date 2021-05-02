@@ -124,7 +124,7 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	p, objs, sequentialFuture := lib.Produce(bucket, prefix, limit, sess, res, delimiter, nonRecursive, list)
+	p, objs, sequentialFuture := lib.Produce(bucket, prefix, limit, s3Client, res, delimiter, nonRecursive, list)
 
 	sequential := <-sequentialFuture
 

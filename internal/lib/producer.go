@@ -20,7 +20,6 @@ import (
 	"regexp"
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
@@ -42,7 +41,7 @@ type Object struct {
 	Size int64
 }
 
-func Produce(bucket string, prefix string, limit uint64, sess *session.Session, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan Object, <-chan bool) {
+func Produce(bucket string, prefix string, limit uint64, svc *s3.S3, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan Object, <-chan bool) {
 	channel := make(chan Object, 2)
 	sequentialFuture := make(chan bool)
 
@@ -51,7 +50,7 @@ func Produce(bucket string, prefix string, limit uint64, sess *session.Session, 
 		BytesDownloaded:  0,
 		channel:          channel,
 		limit:            limit,
-		svc:              s3.New(sess),
+		svc:              svc,
 		delimiter:        delimiter,
 		nonRecursive:     nonRecursive,
 		list:             list,
