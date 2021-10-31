@@ -18,6 +18,7 @@ go 1.17
 
 require (
 	github.com/aws/aws-sdk-go v1.40.59
+	github.com/klauspost/compress v1.13.6
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 )
 

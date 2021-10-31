@@ -31,11 +31,14 @@ import (
 	"runtime/pprof"
 	"sync"
 
+	"golang.org/x/sync/semaphore"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"golang.org/x/sync/semaphore"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 var concurrency uint
@@ -217,6 +220,7 @@ func consumeSequential(obj lib.Object) {
 }
 
 var gzipReader = new(gzip.Reader)
+var zstdReader, _ = zstd.NewReader(nil)
 var headBuffer = bytes.NewBuffer(make([]byte, 0, 256))
 
 type onlyWriter struct {
@@ -226,6 +230,8 @@ type onlyWriter struct {
 func (o onlyWriter) Write(p []byte) (int, error) {
 	return o.stdout.Write(p)
 }
+
+var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 
 func logContent(key string, body io.Reader) {
 	mu.Lock()
@@ -246,7 +252,15 @@ func logContent(key string, body io.Reader) {
 		reader = gzipReader
 	case io.EOF:
 	case gzip.ErrHeader, io.ErrUnexpectedEOF:
-		reader = io.MultiReader(headBuffer, body)
+		if headBuffer.Len() >= 4 && bytes.Equal(headBuffer.Bytes()[:4], zstdMagic) {
+			err := zstdReader.Reset(io.MultiReader(headBuffer, body))
+			if err != nil {
+				log.Fatalf("failed to download file s3://%s/%s after zstd verification, %v", bucket, key, err)
+			}
+			reader = zstdReader
+		} else {
+			reader = io.MultiReader(headBuffer, body)
+		}
 	default:
 		log.Fatalf("failed while reading s3://%s/%s: %s", bucket, key, err)
 	}
