@@ -14,9 +14,11 @@
 
 module cpdash
 
-go 1.15
+go 1.17
 
 require (
-	github.com/aws/aws-sdk-go v1.37.33
-	golang.org/x/sync v0.0.0-20201008141435-b3e1573b7520
+	github.com/aws/aws-sdk-go v1.40.59
+	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 )
+
+require github.com/jmespath/go-jmespath v0.4.0 // indirect

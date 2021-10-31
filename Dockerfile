@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 
-FROM golang:1.15
+FROM golang:1.17
 
 ARG goos=linux
 ARG goarch=amd64
