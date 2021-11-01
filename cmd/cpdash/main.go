@@ -26,9 +26,9 @@ import (
 	"math"
 	"net/url"
 	"os"
-	"regexp"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/semaphore"
@@ -38,22 +38,23 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 
+	"github.com/gobwas/glob"
 	"github.com/klauspost/compress/zstd"
 )
 
 var concurrency uint
 var cpuprofile string
 var memprofile string
-var delimiter string
 var limit uint64
 var list bool
-var nonRecursive bool
-var prepend bool
+var keys bool
 var bufferLimit int64
 
 var bucket string
 var prefix string
-var res []regexp.Regexp
+var globs []glob.Glob
+var pattern glob.Glob
+var debug bool
 
 var sess *session.Session = session.Must(session.NewSessionWithOptions(session.Options{
 	SharedConfigState: session.SharedConfigEnable,
@@ -69,12 +70,11 @@ func init() {
 	flag.UintVar(&concurrency, "P", 32, "concurrent requests")
 	flag.StringVar(&cpuprofile, "cpuprofile", "", "generate cpu profile")
 	flag.StringVar(&memprofile, "memprofile", "", "generate memory profile")
-	flag.StringVar(&delimiter, "d", "/", "s3 key delimiter")
-	flag.Uint64Var(&limit, "l", 10*1024*1024*1024, "download limit")
-	flag.Int64Var(&bufferLimit, "b", 1024*1024*1024, "total buffer memory limit")
+	flag.Uint64Var(&limit, "limit", 10*1024*1024*1024, "download limit")
+	flag.Int64Var(&bufferLimit, "bufferLimit", 1024*1024*1024, "total buffer memory limit")
 	flag.BoolVar(&list, "list", false, "only list keys")
-	flag.BoolVar(&nonRecursive, "non-recursive", false, "disable recursive search")
-	flag.BoolVar(&prepend, "k", false, "print keys")
+	flag.BoolVar(&keys, "keys", false, "print keys")
+	flag.BoolVar(&debug, "debug", false, "debug output")
 
 	force := flag.Bool("f", false, "disable download limit")
 
@@ -82,6 +82,11 @@ func init() {
 
 	if *force {
 		limit = math.MaxInt64
+	}
+
+	nArg := flag.NArg()
+	if nArg != 1 {
+		log.Fatal("supply precisely one positional argument in the form 's3://<bucket>/<prefix>'")
 	}
 
 	urlArg, err := url.Parse(flag.Arg(0))
@@ -95,26 +100,42 @@ func init() {
 		log.Fatal("prefix missing in s3 url, must have the form 's3://<bucket>/<prefix>'")
 	}
 	bucket = urlArg.Host
-	prefix = urlArg.EscapedPath()[1:]
+	path := urlArg.Path[1:]
 
-	nArg := flag.NArg()
-	if nArg < 1 {
-		log.Fatal("supply at least one positional argument")
-	} else if nArg == 1 {
-		re := regexp.MustCompile("")
-		res = []regexp.Regexp{*re}
-	} else {
-		args := flag.Args()
-		res = make([]regexp.Regexp, len(args)-1)
-		for i, v := range args[1:] {
-			res[i] = *regexp.MustCompile(v)
+	pattern = glob.MustCompile(path, '/')
+
+	dirs := strings.SplitAfter(path, "/")
+	prefix = ""
+	globbed := false
+	for i, dir := range dirs {
+		if strings.Contains(dir, "**") {
+			globs = append(globs, glob.MustCompile(strings.Join(dirs[:i+1], ""), '/'))
+			break
 		}
+		if !globbed {
+			prefix += dir
+			for _, c := range []byte{'{', '[', '*', '\\'} {
+				idx := strings.IndexByte(prefix, c)
+				if idx != -1 {
+					if !globbed && prefix[len(prefix)-1] == '/' {
+						prefix = prefix[:len(prefix)-1]
+					}
+					globbed = true
+					prefix = prefix[:idx]
+				}
+			}
+		}
+		if globbed {
+			globs = append(globs, glob.MustCompile(strings.Join(dirs[:i+1], ""), '/'))
+		}
+	}
+
+	if debug {
+		log.Printf("prefix: %s", prefix)
 	}
 }
 
 func main() {
-	runtime.GOMAXPROCS(1)
-
 	if cpuprofile != "" {
 		f, err := os.Create(cpuprofile)
 		if err != nil {
@@ -127,7 +148,7 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	p, objs, sequentialFuture := lib.Produce(bucket, prefix, limit, s3Client, res, delimiter, nonRecursive, list)
+	p, objs, sequentialFuture := lib.Produce(bucket, prefix, limit, s3Client, globs, pattern, list, debug)
 
 	sequential := <-sequentialFuture
 
@@ -265,7 +286,7 @@ func logContent(key string, body io.Reader) {
 		log.Fatalf("failed while reading s3://%s/%s: %s", bucket, key, err)
 	}
 
-	if prepend {
+	if keys {
 		fmt.Printf("---------- content of s3://%s/%s ----------\n", bucket, key)
 	}
 

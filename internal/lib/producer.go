@@ -17,20 +17,21 @@ package lib
 import (
 	"fmt"
 	"log"
-	"regexp"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/gobwas/glob"
 )
 
 type producer struct {
+	debug            bool
 	bucket           string
 	BytesDownloaded  uint64
 	channel          chan<- Object
 	limit            uint64
 	svc              *s3.S3
-	delimiter        string
-	nonRecursive     bool
+	pattern          glob.Glob
 	list             bool
 	sequentialFuture chan<- bool
 	objects          uint
@@ -41,7 +42,7 @@ type Object struct {
 	Size int64
 }
 
-func Produce(bucket string, prefix string, limit uint64, svc *s3.S3, res []regexp.Regexp, delimiter string, nonRecursive bool, list bool) (*producer, <-chan Object, <-chan bool) {
+func Produce(bucket string, prefix string, limit uint64, svc *s3.S3, globs []glob.Glob, pattern glob.Glob, list bool, debug bool) (*producer, <-chan Object, <-chan bool) {
 	channel := make(chan Object, 2)
 	sequentialFuture := make(chan bool)
 
@@ -51,24 +52,24 @@ func Produce(bucket string, prefix string, limit uint64, svc *s3.S3, res []regex
 		channel:          channel,
 		limit:            limit,
 		svc:              svc,
-		delimiter:        delimiter,
-		nonRecursive:     nonRecursive,
+		pattern:          pattern,
 		list:             list,
 		sequentialFuture: sequentialFuture,
+		debug:            debug,
 	}
 
-	go p.produce(prefix, res, true)
+	go p.produce(prefix, globs, true)
 
 	return &p, channel, sequentialFuture
 }
 
-func (p *producer) produce(prefix string, res []regexp.Regexp, root bool) {
+func (p *producer) produce(prefix string, globs []glob.Glob, root bool) {
 	if root {
 		defer close(p.channel)
 	}
 	var delimiter *string
-	if len(res) > 1 || p.nonRecursive {
-		delimiter = &p.delimiter
+	if len(globs) > 1 {
+		delimiter = aws.String("/")
 	} else {
 		delimiter = nil
 	}
@@ -77,18 +78,20 @@ func (p *producer) produce(prefix string, res []regexp.Regexp, root bool) {
 		Prefix:    &prefix,
 		Delimiter: delimiter,
 	}
-	continuationToken, ok := p.walk_page(input, res)
+	if p.debug {
+		log.Printf("input: %s", input)
+	}
+	continuationToken, ok := p.walk_page(input, globs)
 	for ok {
 		input.ContinuationToken = continuationToken
-		continuationToken, ok = p.walk_page(input, res)
+		continuationToken, ok = p.walk_page(input, globs)
 	}
 	if root && p.objects < 2 {
 		p.sequentialFuture <- true
 	}
 }
 
-func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) (*string, bool) {
-	inputPrefix := *input.Prefix
+func (p *producer) walk_page(input *s3.ListObjectsV2Input, globs []glob.Glob) (*string, bool) {
 	result, err := p.svc.ListObjectsV2(input)
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
@@ -102,14 +105,14 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) 
 		log.Panic(err)
 	}
 
-	if len(res) <= 1 {
+	if len(globs) <= 1 {
 		for _, object := range result.Contents {
 			key := *object.Key
 			size := *object.Size
 			if size < 0 {
 				log.Fatalf("*object.Size < 0: %+v", object)
 			}
-			if res[0].MatchString(key[len(inputPrefix):]) {
+			if p.pattern.Match(key) {
 				if p.list {
 					fmt.Printf("s3://%s/%s\n", p.bucket, key)
 				} else {
@@ -128,8 +131,11 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, res []regexp.Regexp) 
 	} else {
 		for _, commonPrefix := range result.CommonPrefixes {
 			prefix := *commonPrefix.Prefix
-			if res[0].MatchString(prefix[len(inputPrefix):]) {
-				p.produce(prefix, res[1:], false)
+			if globs[0].Match(prefix) {
+				if p.debug {
+					log.Printf("matched common prefix %s", prefix)
+				}
+				p.produce(prefix, globs[1:], false)
 			}
 		}
 	}
