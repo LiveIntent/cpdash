@@ -24,7 +24,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"net/url"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -89,22 +88,20 @@ func init() {
 		log.Fatal("supply precisely one positional argument in the form 's3://<bucket>/<prefix>'")
 	}
 
-	urlArg, err := url.Parse(flag.Arg(0))
-	if err != nil {
-		log.Fatal(err)
+	urlArg := strings.SplitAfter(flag.Arg(0), "/")
+	if len(urlArg) < 4 {
+		log.Fatal("url must have the form 's3://<bucket>/<prefix>'")
 	}
-	if urlArg.Scheme != "s3" {
+	if urlArg[0] != "s3:/" {
 		log.Fatal("scheme must be s3")
 	}
-	if urlArg.Path == "" {
-		log.Fatal("prefix missing in s3 url, must have the form 's3://<bucket>/<prefix>'")
-	}
-	bucket = urlArg.Host
-	path := urlArg.Path[1:]
+
+	bucket = urlArg[2][:len(urlArg[2])-1]
+	dirs := urlArg[3:]
+	path := strings.Join(dirs, "")
 
 	pattern = glob.MustCompile(path, '/')
 
-	dirs := strings.SplitAfter(path, "/")
 	prefix = ""
 	globbed := false
 	for i, dir := range dirs {
@@ -114,7 +111,7 @@ func init() {
 		}
 		if !globbed {
 			prefix += dir
-			for _, c := range []byte{'{', '[', '*', '\\'} {
+			for _, c := range []byte{'{', '[', '*', '\\', '?'} {
 				idx := strings.IndexByte(prefix, c)
 				if idx != -1 {
 					if !globbed && prefix[len(prefix)-1] == '/' {
