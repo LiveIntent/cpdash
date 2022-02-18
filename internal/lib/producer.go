@@ -15,12 +15,12 @@
 package lib
 
 import (
+	"context"
 	"fmt"
 	"log"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gobwas/glob"
 )
 
@@ -31,7 +31,7 @@ type producer struct {
 	pooled          chan<- Object
 	streamed        chan<- Object
 	limit           uint64
-	svc             *s3.S3
+	svc             *s3.Client
 	pattern         glob.Glob
 	list            bool
 	bufferLimit     int64
@@ -42,7 +42,7 @@ type Object struct {
 	Size int64
 }
 
-func Produce(bucket string, prefix string, limit uint64, svc *s3.S3, globs []glob.Glob, pattern glob.Glob, list bool, debug bool, bufferLimit int64) (*uint64, <-chan Object, <-chan Object) {
+func Produce(bucket string, prefix string, limit uint64, svc *s3.Client, globs []glob.Glob, pattern glob.Glob, list bool, debug bool, bufferLimit int64) (*uint64, <-chan Object, <-chan Object) {
 	pooled := make(chan Object)
 	streamed := make(chan Object)
 
@@ -77,7 +77,7 @@ func (p *producer) produce(prefix string, globs []glob.Glob, root bool) {
 	} else {
 		delimiter = nil
 	}
-	input := &s3.ListObjectsV2Input{
+	input := s3.ListObjectsV2Input{
 		Bucket:    &p.bucket,
 		Prefix:    &prefix,
 		Delimiter: delimiter,
@@ -85,31 +85,23 @@ func (p *producer) produce(prefix string, globs []glob.Glob, root bool) {
 	if p.debug {
 		log.Printf("input: %s", input)
 	}
-	continuationToken, ok := p.walk_page(input, globs)
+	continuationToken, ok := p.walk_page(&input, globs)
 	for ok {
 		input.ContinuationToken = continuationToken
-		continuationToken, ok = p.walk_page(input, globs)
+		continuationToken, ok = p.walk_page(&input, globs)
 	}
 }
 
 func (p *producer) walk_page(input *s3.ListObjectsV2Input, globs []glob.Glob) (*string, bool) {
-	result, err := p.svc.ListObjectsV2(input)
+	result, err := p.svc.ListObjectsV2(context.TODO(), input)
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
-			switch aerr.Code() {
-			case s3.ErrCodeNoSuchBucket:
-				log.Println(s3.ErrCodeNoSuchBucket, aerr.Error())
-			default:
-				log.Println(aerr.Error())
-			}
-		}
 		log.Panic(err)
 	}
 
 	if len(globs) <= 1 {
 		for _, object := range result.Contents {
 			key := *object.Key
-			size := *object.Size
+			size := object.Size
 			if size < 0 {
 				log.Fatalf("*object.Size < 0: %+v", object)
 			}
@@ -141,5 +133,5 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, globs []glob.Glob) (*
 		}
 	}
 
-	return result.NextContinuationToken, *result.IsTruncated
+	return result.NextContinuationToken, result.IsTruncated
 }

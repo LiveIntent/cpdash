@@ -33,11 +33,9 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gobwas/glob"
 	"github.com/klauspost/compress/zstd"
 )
@@ -56,11 +54,7 @@ var globs []glob.Glob
 var pattern glob.Glob
 var debug bool
 
-var sess *session.Session = session.Must(session.NewSessionWithOptions(session.Options{
-	SharedConfigState: session.SharedConfigEnable,
-}))
-var downloader = s3manager.NewDownloader(sess)
-var s3Client = s3.New(sess)
+var s3Client *s3.Client
 
 var mu sync.Mutex
 
@@ -131,6 +125,13 @@ func init() {
 	if debug {
 		log.Printf("prefix: %s", prefix)
 	}
+
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	s3Client = s3.NewFromConfig(cfg)
 }
 
 func main() {
@@ -189,39 +190,34 @@ func main() {
 
 func consume(pooled <-chan lib.Object, sem *semaphore.Weighted) {
 	for obj := range pooled {
-		key := obj.Key
-		size := obj.Size
+		sem.Acquire(context.TODO(), obj.Size)
+		buffer := manager.NewWriteAtBuffer(make([]byte, obj.Size))
 
-		sem.Acquire(context.TODO(), size)
-		buffer := make([]byte, size)
-		f := aws.NewWriteAtBuffer(buffer)
-
-		_, dErr := downloader.Download(f, &s3.GetObjectInput{
+		_, dErr := manager.NewDownloader(s3Client).Download(context.TODO(), buffer, &s3.GetObjectInput{
 			Bucket: &bucket,
-			Key:    &key,
+			Key:    &obj.Key,
 		})
 		if dErr != nil {
-			log.Panicf("failed to download file s3://%s/%s, %v", bucket, key, dErr)
+			log.Panicf("failed to download file s3://%s/%s, %v", bucket, obj.Key, dErr)
 		}
 
-		logContent(key, bytes.NewBuffer(f.Bytes()))
-		sem.Release(size)
+		logContent(obj.Key, bytes.NewBuffer(buffer.Bytes()))
+		sem.Release(obj.Size)
 	}
 }
 
 func consumeSequential(obj lib.Object) {
-	key := obj.Key
-	object, err := s3Client.GetObject(&s3.GetObjectInput{
+	object, err := s3Client.GetObject(context.TODO(), &s3.GetObjectInput{
 		Bucket: &bucket,
-		Key:    &key,
+		Key:    &obj.Key,
 	})
 	if err != nil {
-		log.Panicf("failed to download file s3://%s/%s, %v", bucket, key, err)
+		log.Panicf("failed to download file s3://%s/%s, %v", bucket, obj.Key, err)
 	}
 	body := object.Body
 	defer body.Close()
 
-	logContent(key, body)
+	logContent(obj.Key, body)
 }
 
 var gzipReader = new(gzip.Reader)
