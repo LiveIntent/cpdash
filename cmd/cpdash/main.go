@@ -146,30 +146,31 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	p, objs, sequentialFuture := lib.Produce(bucket, prefix, limit, s3Client, globs, pattern, list, debug)
+	bytesDownloaded, pooled, streamed := lib.Produce(bucket, prefix, limit, s3Client, globs, pattern, list, debug, bufferLimit)
 
-	sequential := <-sequentialFuture
+	var wg sync.WaitGroup
 
-	if concurrency == 1 || sequential {
-		for obj := range objs {
+	wg.Add(1)
+	go func(streamed <-chan lib.Object) {
+		defer wg.Done()
+		for obj := range streamed {
 			consumeSequential(obj)
 		}
-	} else {
-		sem := semaphore.NewWeighted(bufferLimit)
-		var wg sync.WaitGroup
-		for i := uint(0); i < concurrency; i++ {
-			wg.Add(1)
-			go func(objs <-chan lib.Object) {
-				defer wg.Done()
+	}(streamed)
 
-				consume(objs, sem)
-			}(objs)
-		}
-		wg.Wait()
+	sem := semaphore.NewWeighted(bufferLimit)
+	for i := uint(0); i < concurrency; i++ {
+		wg.Add(1)
+		go func(pooled <-chan lib.Object) {
+			defer wg.Done()
+
+			consume(pooled, sem)
+		}(pooled)
 	}
+	wg.Wait()
 
-	if p.BytesDownloaded > limit {
-		log.Printf("exceeded download limit %v, downloaded %v bytes", limit, p.BytesDownloaded)
+	if *bytesDownloaded > limit {
+		log.Printf("exceeded download limit %v, downloaded %v bytes", limit, bytesDownloaded)
 		os.Exit(1)
 	}
 
@@ -186,27 +187,14 @@ func main() {
 	}
 }
 
-func consume(objs <-chan lib.Object, sem *semaphore.Weighted) {
-	buffer := []byte{}
-	bufSize := int64(0)
-
-	for obj := range objs {
+func consume(pooled <-chan lib.Object, sem *semaphore.Weighted) {
+	for obj := range pooled {
 		key := obj.Key
 		size := obj.Size
 
-		if size > bufferLimit {
-			log.Fatalf("*object.Size > bufferLimit: %+v", obj)
-		}
-
-		if size > int64(cap(buffer)) {
-			buffer = nil
-			sem.Release(bufSize)
-
-			bufSize = size
-			sem.Acquire(context.TODO(), bufSize)
-			buffer = make([]byte, bufSize)
-		}
-		f := aws.NewWriteAtBuffer(buffer[:0])
+		sem.Acquire(context.TODO(), size)
+		buffer := make([]byte, size)
+		f := aws.NewWriteAtBuffer(buffer)
 
 		_, dErr := downloader.Download(f, &s3.GetObjectInput{
 			Bucket: &bucket,
@@ -217,10 +205,8 @@ func consume(objs <-chan lib.Object, sem *semaphore.Weighted) {
 		}
 
 		logContent(key, bytes.NewBuffer(f.Bytes()))
+		sem.Release(size)
 	}
-
-	buffer = nil
-	sem.Release(bufSize)
 }
 
 func consumeSequential(obj lib.Object) {

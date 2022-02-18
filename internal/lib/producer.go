@@ -25,16 +25,16 @@ import (
 )
 
 type producer struct {
-	debug            bool
-	bucket           string
-	BytesDownloaded  uint64
-	channel          chan<- Object
-	limit            uint64
-	svc              *s3.S3
-	pattern          glob.Glob
-	list             bool
-	sequentialFuture chan<- bool
-	objects          uint
+	debug           bool
+	bucket          string
+	BytesDownloaded *uint64
+	pooled          chan<- Object
+	streamed        chan<- Object
+	limit           uint64
+	svc             *s3.S3
+	pattern         glob.Glob
+	list            bool
+	bufferLimit     int64
 }
 
 type Object struct {
@@ -42,30 +42,34 @@ type Object struct {
 	Size int64
 }
 
-func Produce(bucket string, prefix string, limit uint64, svc *s3.S3, globs []glob.Glob, pattern glob.Glob, list bool, debug bool) (*producer, <-chan Object, <-chan bool) {
-	channel := make(chan Object, 2)
-	sequentialFuture := make(chan bool)
+func Produce(bucket string, prefix string, limit uint64, svc *s3.S3, globs []glob.Glob, pattern glob.Glob, list bool, debug bool, bufferLimit int64) (*uint64, <-chan Object, <-chan Object) {
+	pooled := make(chan Object)
+	streamed := make(chan Object)
+
+	var zero uint64 = 0
 
 	p := producer{
-		bucket:           bucket,
-		BytesDownloaded:  0,
-		channel:          channel,
-		limit:            limit,
-		svc:              svc,
-		pattern:          pattern,
-		list:             list,
-		sequentialFuture: sequentialFuture,
-		debug:            debug,
+		bucket:          bucket,
+		BytesDownloaded: &zero,
+		pooled:          pooled,
+		streamed:        streamed,
+		limit:           limit,
+		svc:             svc,
+		pattern:         pattern,
+		list:            list,
+		debug:           debug,
+		bufferLimit:     bufferLimit,
 	}
 
 	go p.produce(prefix, globs, true)
 
-	return &p, channel, sequentialFuture
+	return p.BytesDownloaded, pooled, streamed
 }
 
 func (p *producer) produce(prefix string, globs []glob.Glob, root bool) {
 	if root {
-		defer close(p.channel)
+		defer close(p.pooled)
+		defer close(p.streamed)
 	}
 	var delimiter *string
 	if len(globs) > 1 {
@@ -85,9 +89,6 @@ func (p *producer) produce(prefix string, globs []glob.Glob, root bool) {
 	for ok {
 		input.ContinuationToken = continuationToken
 		continuationToken, ok = p.walk_page(input, globs)
-	}
-	if root && p.objects < 2 {
-		p.sequentialFuture <- true
 	}
 }
 
@@ -116,13 +117,13 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, globs []glob.Glob) (*
 				if p.list {
 					fmt.Printf("s3://%s/%s\n", p.bucket, key)
 				} else {
-					p.objects += 1
-					if p.objects == 2 {
-						close(p.sequentialFuture)
+					if size < p.bufferLimit {
+						p.pooled <- Object{key, size}
+					} else {
+						p.streamed <- Object{key, size}
 					}
-					p.channel <- Object{key, size}
-					p.BytesDownloaded += uint64(size)
-					if p.BytesDownloaded > p.limit {
+					*p.BytesDownloaded += uint64(size)
+					if *p.BytesDownloaded > p.limit {
 						return nil, false
 					}
 				}
