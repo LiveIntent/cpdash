@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -239,98 +240,47 @@ func consumeSequential(obj lib.Object) {
 
 var gzipReader = new(gzip.Reader)
 var zstdReader, _ = zstd.NewReader(nil)
-var headBuffer = bytes.NewBuffer(make([]byte, 0, 256))
+var peekReader = bufio.NewReaderSize(nil, 4)
+var copyBuf = make([]byte, 1<<20)
 
-type onlyWriter struct {
-	stdout *os.File
-}
-
-func (o onlyWriter) Write(p []byte) (int, error) {
-	return o.stdout.Write(p)
-}
-
+var gzipMagic = []byte{0x1f, 0x8b, 0x08}
 var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 
 func logContent(key string, body io.Reader) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	headBuffer.Reset()
-	head := io.TeeReader(body, headBuffer)
+	peekReader.Reset(body)
+	head, err := peekReader.Peek(4)
+	if err != nil && err != io.EOF {
+		log.Fatalf("failed while reading s3://%s/%s: %s", bucket, key, err)
+	}
 
 	var reader io.Reader
-	err := gzipReader.Reset(head)
-	switch err {
-	case nil:
-		err := gzipReader.Reset(io.MultiReader(headBuffer, body))
+	switch {
+	case len(head) == 4 && bytes.Equal(head, zstdMagic):
+		err := zstdReader.Reset(peekReader)
+		if err != nil {
+			log.Fatalf("failed to download file s3://%s/%s after zstd verification, %v", bucket, key, err)
+		}
+		reader = zstdReader
+	case len(head) >= 3 && bytes.Equal(head[:3], gzipMagic):
+		err := gzipReader.Reset(peekReader)
 		if err != nil {
 			log.Fatalf("failed to download file s3://%s/%s after gzip verification, %v", bucket, key, err)
 		}
 		defer gzipReader.Close()
 		reader = gzipReader
-	case io.EOF:
-	case gzip.ErrHeader, io.ErrUnexpectedEOF:
-		if headBuffer.Len() >= 4 && bytes.Equal(headBuffer.Bytes()[:4], zstdMagic) {
-			err := zstdReader.Reset(io.MultiReader(headBuffer, body))
-			if err != nil {
-				log.Fatalf("failed to download file s3://%s/%s after zstd verification, %v", bucket, key, err)
-			}
-			reader = zstdReader
-		} else {
-			reader = io.MultiReader(headBuffer, body)
-		}
 	default:
-		log.Fatalf("failed while reading s3://%s/%s: %s", bucket, key, err)
+		reader = peekReader
 	}
 
 	if keys {
 		fmt.Printf("---------- content of s3://%s/%s ----------\n", bucket, key)
 	}
 
-	if reader != nil {
-		err := copyBuffer(onlyWriter{os.Stdout}, reader)
-		if err != nil {
-			log.Fatalf("failed while copying %s to stdout: %s", key, err)
-		}
-	}
-}
-
-var buf = make([]byte, 32*1024)
-
-func copyBuffer(dst io.Writer, src io.Reader) (err error) {
-	var last byte
-
-	// borrowed mostly from io.copyBuffer
-	for {
-		nr, er := src.Read(buf)
-		if nr > 0 {
-			nw, ew := dst.Write(buf[0:nr])
-			if ew != nil {
-				err = ew
-				break
-			}
-			if nr != nw {
-				err = io.ErrShortWrite
-				break
-			}
-			last = buf[nr-1]
-		}
-		if er != nil {
-			if er != io.EOF {
-				err = er
-			}
-			break
-		}
-	}
+	nw, err := io.CopyBuffer(os.Stdout, reader, copyBuf)
 	if err != nil {
-		return
+		log.Fatalf("failed while copying s3://%s/%s to stdout, wrote %d bytes: %s", bucket, key, nw, err)
 	}
-	if last != '\n' {
-		nw, err := dst.Write([]byte{'\n'})
-		if err != nil || nw != 1 {
-			log.Fatalf("failed to write missing newline to stdout, wrote %d bytes: %s", nw, err)
-		}
-	}
-
-	return
 }
