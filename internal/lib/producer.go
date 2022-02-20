@@ -18,72 +18,108 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gobwas/glob"
 )
 
+type GlobPattern struct {
+	bucket         string
+	globFreePrefix string
+	pattern        glob.Glob
+	globs          []glob.Glob
+}
+
+func newGlobPattern(urlArg []string) GlobPattern {
+	prefix := ""
+	globs := []glob.Glob{}
+	dirs := urlArg[3:]
+	globbed := false
+
+	for i, dir := range dirs {
+		if strings.Contains(dir, "**") {
+			globs = append(globs, glob.MustCompile(strings.Join(dirs[:i+1], ""), '/'))
+			break
+		}
+		if !globbed {
+			prefix += dir
+			for _, c := range []byte{'{', '[', '*', '\\', '?'} {
+				idx := strings.IndexByte(prefix, c)
+				if idx != -1 {
+					if !globbed && prefix[len(prefix)-1] == '/' {
+						prefix = prefix[:len(prefix)-1]
+					}
+					globbed = true
+					prefix = prefix[:idx]
+				}
+			}
+		}
+		if globbed {
+			globs = append(globs, glob.MustCompile(strings.Join(dirs[:i+1], ""), '/'))
+		}
+	}
+
+	path := strings.Join(dirs, "")
+
+	return GlobPattern{
+		bucket:         urlArg[2][:len(urlArg[2])-1],
+		globFreePrefix: prefix,
+		pattern:        glob.MustCompile(path, '/'),
+		globs:          globs,
+	}
+}
+
 type producer struct {
-	debug           bool
-	bucket          string
-	BytesDownloaded *uint64
+	args            Args
+	globPattern     GlobPattern
+	bytesDownloaded *uint64
 	pooled          chan<- Object
 	streamed        chan<- Object
-	limit           uint64
-	svc             *s3.Client
-	pattern         glob.Glob
-	list            bool
-	bufferLimit     int64
+	s3Client        *s3.Client
 }
 
 type Object struct {
-	Key  string
-	Size int64
+	Bucket string
+	Key    string
+	Size   int64
 }
 
-func Produce(bucket string, prefix string, limit uint64, svc *s3.Client, globs []glob.Glob, pattern glob.Glob, list bool, debug bool, bufferLimit int64) (*uint64, <-chan Object, <-chan Object) {
+func produce(args Args, globPattern GlobPattern, s3Client *s3.Client) (*uint64, <-chan Object, <-chan Object) {
 	pooled := make(chan Object)
 	streamed := make(chan Object)
-
-	var zero uint64 = 0
-
+	bytesDownloaded := new(uint64)
 	p := producer{
-		bucket:          bucket,
-		BytesDownloaded: &zero,
+		args:            args,
+		globPattern:     globPattern,
+		bytesDownloaded: bytesDownloaded,
 		pooled:          pooled,
 		streamed:        streamed,
-		limit:           limit,
-		svc:             svc,
-		pattern:         pattern,
-		list:            list,
-		debug:           debug,
-		bufferLimit:     bufferLimit,
+		s3Client:        s3Client,
 	}
 
-	go p.produce(prefix, globs, true)
+	go func() {
+		defer close(pooled)
+		defer close(streamed)
+		p.produce(globPattern.globFreePrefix, globPattern.globs)
+	}()
 
-	return p.BytesDownloaded, pooled, streamed
+	return bytesDownloaded, pooled, streamed
 }
 
-func (p *producer) produce(prefix string, globs []glob.Glob, root bool) {
-	if root {
-		defer close(p.pooled)
-		defer close(p.streamed)
-	}
+func (p *producer) produce(prefix string, globs []glob.Glob) {
 	var delimiter *string
 	if len(globs) > 1 {
 		delimiter = aws.String("/")
-	} else {
-		delimiter = nil
 	}
 	input := s3.ListObjectsV2Input{
-		Bucket:    &p.bucket,
+		Bucket:    &p.globPattern.bucket,
 		Prefix:    &prefix,
 		Delimiter: delimiter,
 	}
-	if p.debug {
-		log.Printf("input: %s", input)
+	if p.args.Debug {
+		log.Printf("input: %+v", input)
 	}
 	continuationToken, ok := p.walk_page(&input, globs)
 	for ok {
@@ -93,29 +129,27 @@ func (p *producer) produce(prefix string, globs []glob.Glob, root bool) {
 }
 
 func (p *producer) walk_page(input *s3.ListObjectsV2Input, globs []glob.Glob) (*string, bool) {
-	result, err := p.svc.ListObjectsV2(context.TODO(), input)
+	result, err := p.s3Client.ListObjectsV2(context.TODO(), input)
 	if err != nil {
 		log.Panic(err)
 	}
 
 	if len(globs) <= 1 {
+		bucket := p.globPattern.bucket
 		for _, object := range result.Contents {
 			key := *object.Key
 			size := object.Size
-			if size < 0 {
-				log.Fatalf("*object.Size < 0: %+v", object)
-			}
-			if p.pattern.Match(key) {
-				if p.list {
-					fmt.Printf("s3://%s/%s\n", p.bucket, key)
+			if p.globPattern.pattern.Match(key) {
+				if p.args.List {
+					fmt.Printf("s3://%s/%s\n", bucket, key)
 				} else {
-					if size < p.bufferLimit {
-						p.pooled <- Object{key, size}
+					if size < p.args.BufferLimit {
+						p.pooled <- Object{bucket, key, size}
 					} else {
-						p.streamed <- Object{key, size}
+						p.streamed <- Object{bucket, key, size}
 					}
-					*p.BytesDownloaded += uint64(size)
-					if *p.BytesDownloaded > p.limit {
+					*p.bytesDownloaded += uint64(size)
+					if *p.bytesDownloaded > p.args.Limit {
 						return nil, false
 					}
 				}
@@ -125,10 +159,10 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input, globs []glob.Glob) (*
 		for _, commonPrefix := range result.CommonPrefixes {
 			prefix := *commonPrefix.Prefix
 			if globs[0].Match(prefix) {
-				if p.debug {
+				if p.args.Debug {
 					log.Printf("matched common prefix %s", prefix)
 				}
-				p.produce(prefix, globs[1:], false)
+				p.produce(prefix, globs[1:])
 			}
 		}
 	}
