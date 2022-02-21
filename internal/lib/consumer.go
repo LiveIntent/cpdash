@@ -41,7 +41,7 @@ func consume(obj Object, s3Client *s3.Client, keys bool) {
 		log.Panicf("failed to download file s3://%s/%s, %v", obj.Bucket, obj.Key, dErr)
 	}
 
-	logContent(obj.Bucket, obj.Key, bytes.NewBuffer(buffer.Bytes()), keys)
+	logContent(obj.Bucket, obj.Key, bytes.NewBuffer(buffer.Bytes()), os.Stdout, keys)
 }
 
 func consumeSequential(obj Object, s3Client *s3.Client, keys bool) {
@@ -55,7 +55,7 @@ func consumeSequential(obj Object, s3Client *s3.Client, keys bool) {
 	body := object.Body
 	defer body.Close()
 
-	logContent(obj.Bucket, obj.Key, body, keys)
+	logContent(obj.Bucket, obj.Key, body, os.Stdout, keys)
 }
 
 var gzipReader = new(gzip.Reader)
@@ -68,7 +68,7 @@ var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 
 var mu sync.Mutex
 
-func logContent(bucket string, key string, body io.Reader, keys bool) {
+func logContent(bucket string, key string, body io.Reader, output io.Writer, keys bool) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -101,7 +101,7 @@ func logContent(bucket string, key string, body io.Reader, keys bool) {
 		fmt.Printf("---------- content of s3://%s/%s ----------\n", bucket, key)
 	}
 
-	nw, err := io.CopyBuffer(os.Stdout, reader, copyBuf)
+	nw, err := io.CopyBuffer(output, reader, copyBuf)
 	if err != nil {
 		log.Fatalf("failed while copying s3://%s/%s to stdout, wrote %d bytes: %s", bucket, key, nw, err)
 	}
