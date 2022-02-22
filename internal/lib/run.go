@@ -56,8 +56,6 @@ func Run(args Args) {
 		defer pprof.StopCPUProfile()
 	}
 
-	globPattern := newGlobPattern(args.UrlArg)
-
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		log.Fatal(err)
@@ -65,7 +63,7 @@ func Run(args Args) {
 
 	s3Client := s3.NewFromConfig(cfg)
 
-	bytesDownloaded, pooled, streamed := produce(args, globPattern, s3Client)
+	bytesDownloaded, pooled, streamed := produce(args, s3Client)
 
 	var wg sync.WaitGroup
 
