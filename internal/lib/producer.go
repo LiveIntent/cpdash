@@ -107,5 +107,6 @@ func (p *producer) walk_page(input *s3.ListObjectsV2Input) (*string, bool) {
 		p.produce(prefix)
 	}
 
-	return result.NextContinuationToken, result.IsTruncated
+	isTruncated := result.IsTruncated != nil && *result.IsTruncated
+	return result.NextContinuationToken, isTruncated
 }

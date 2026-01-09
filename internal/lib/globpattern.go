@@ -81,12 +81,12 @@ func (g GlobPattern) filterContents(contents []types.Object, args Args) (pooled 
 		if !g.pattern.Match(key) {
 			continue
 		}
-		if object.Size < args.BufferLimit {
-			pooled = append(pooled, Object{Bucket: g.bucket, Key: key, Size: object.Size})
+		if *object.Size < args.BufferLimit {
+			pooled = append(pooled, Object{Bucket: g.bucket, Key: key, Size: *object.Size})
 		} else {
-			streamed = append(streamed, Object{Bucket: g.bucket, Key: key, Size: object.Size})
+			streamed = append(streamed, Object{Bucket: g.bucket, Key: key, Size: *object.Size})
 		}
-		*g.bytesDownloaded += uint64(object.Size)
+		*g.bytesDownloaded += uint64(*object.Size)
 		if *g.bytesDownloaded > args.Limit {
 			break
 		}
