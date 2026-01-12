@@ -36,6 +36,7 @@ func main() {
 	flag.BoolVar(&args.Keys, "keys", false, "print keys")
 	flag.BoolVar(&args.Debug, "debug", false, "debug output")
 	flag.BoolVar(&args.Force, "f", false, "disable download limit")
+	flag.StringVar(&args.AwsProfile, "profile", "", "AWS profile to use")
 
 	flag.Parse()
 

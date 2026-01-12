@@ -40,6 +40,8 @@ type Args struct {
 	Keys  bool
 	Debug bool
 
+	AwsProfile string
+
 	UrlArg []string
 }
 
@@ -56,7 +58,11 @@ func Run(args Args) {
 		defer pprof.StopCPUProfile()
 	}
 
-	cfg, err := config.LoadDefaultConfig(context.TODO())
+	var configOpts []func(*config.LoadOptions) error
+	if args.AwsProfile != "" {
+		configOpts = append(configOpts, config.WithSharedConfigProfile(args.AwsProfile))
+	}
+	cfg, err := config.LoadDefaultConfig(context.TODO(), configOpts...)
 	if err != nil {
 		log.Fatal(err)
 	}
