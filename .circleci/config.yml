@@ -1,0 +1,114 @@
+version: 2.1
+orbs:
+  aws-cli: circleci/aws-cli@5.4
+  li-deploy: liveintent/li-deploy@4.3
+
+executors:
+  golang:
+    docker:
+      - image: cimg/go:1.23
+
+parameters:
+  image_version_file:
+    type: string
+    default: docker_image_version.txt
+
+commands:
+  build_and_push_docker:
+    parameters:
+      publish_tag:
+        description: Additional tag to publish (e.g., 'latest' for production, 'dev' for development)
+        type: string
+    steps:
+      - run:
+          name: Build and push docker image
+          command: |
+            IMAGE_TAG="$(git describe --tags 2>/dev/null || echo "0.0.0-${CIRCLE_SHA1:0:7}")"
+            echo $IMAGE_TAG > '<<pipeline.parameters.image_version_file>>'
+            aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 957598027970.dkr.ecr.us-east-1.amazonaws.com
+            docker build . \
+                -t 957598027970.dkr.ecr.us-east-1.amazonaws.com/cpdash:$IMAGE_TAG
+            docker push 957598027970.dkr.ecr.us-east-1.amazonaws.com/cpdash:$IMAGE_TAG
+
+      - run:
+          name: Push tagged docker image
+          command: |
+            IMAGE_TAG="$(git describe --tags 2>/dev/null || echo "0.0.0-${CIRCLE_SHA1:0:7}")"
+            docker tag 957598027970.dkr.ecr.us-east-1.amazonaws.com/cpdash:$IMAGE_TAG \
+                957598027970.dkr.ecr.us-east-1.amazonaws.com/cpdash:<<parameters.publish_tag>>
+            docker push 957598027970.dkr.ecr.us-east-1.amazonaws.com/cpdash:<<parameters.publish_tag>>
+
+      - li-deploy/scan_docker_image:
+          image: 957598027970.dkr.ecr.us-east-1.amazonaws.com/cpdash
+          slack_webhook: SLACK_DOCKER_SCAN
+          scan_library_packages: false
+
+jobs:
+  build_and_test:
+    executor: golang
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Run tests
+          command: go test ./...
+      - run:
+          name: Build binary
+          command: CGO_ENABLED=0 go build ./cmd/cpdash
+
+  build_and_publish_docker:
+    executor: aws-cli/default
+    resource_class: medium
+    environment:
+      IMAGE_VERSION_FILE: << pipeline.parameters.image_version_file >>
+    steps:
+      - checkout
+      - aws-cli/setup
+      - setup_remote_docker
+      - build_and_push_docker:
+          publish_tag: "latest"
+
+  build_dev_image:
+    executor: aws-cli/default
+    resource_class: medium
+    environment:
+      IMAGE_VERSION_FILE: << pipeline.parameters.image_version_file >>
+    steps:
+      - checkout
+      - aws-cli/setup
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - build_and_push_docker:
+          publish_tag: "dev"
+
+workflows:
+  version: 2
+  build_and_publish:
+    jobs:
+      - build_and_test:
+          context:
+            - org-global-cph
+
+      - build_dev_image?:
+          type: approval
+          filters:
+            branches:
+              ignore: master
+
+      - build_dev_image:
+          context:
+            - org-global-cph
+          requires:
+            - build_dev_image?
+          filters:
+            branches:
+              ignore: master
+
+      - build_and_publish_docker:
+          context:
+            - org-global-cph
+          requires:
+            - build_and_test
+          filters:
+            branches:
+              only: master
