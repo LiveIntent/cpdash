@@ -40,6 +40,7 @@ func newGlobPattern(urlArg []string) GlobPattern {
 	for i, dir := range dirs {
 		if strings.Contains(dir, "**") {
 			globs = append(globs, glob.MustCompile(strings.Join(dirs[:i+1], ""), '/'))
+			counts = append(counts, -1)
 			break
 		}
 		if !globbed {
@@ -97,7 +98,7 @@ func (g GlobPattern) filterContents(contents []types.Object, args Args) (pooled 
 func (g GlobPattern) filterCommonPrefixes(commonPrefixes []types.CommonPrefix, prefix string) (prefixes []string) {
 	count := strings.Count(prefix, "/") + 1
 	for i, pattern := range g.globs {
-		if g.counts[i] == count {
+		if g.counts[i] == -1 || g.counts[i] == count {
 			for _, commonPrefix := range commonPrefixes {
 				prefix := *commonPrefix.Prefix
 				if pattern.Match(prefix) {

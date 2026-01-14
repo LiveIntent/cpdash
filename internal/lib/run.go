@@ -41,6 +41,7 @@ type Args struct {
 	Debug bool
 
 	AwsProfile string
+	AwsRegion  string
 
 	UrlArg []string
 }
@@ -62,9 +63,20 @@ func Run(args Args) {
 	if args.AwsProfile != "" {
 		configOpts = append(configOpts, config.WithSharedConfigProfile(args.AwsProfile))
 	}
+	if args.AwsRegion != "" {
+		configOpts = append(configOpts, config.WithRegion(args.AwsRegion))
+	}
 	cfg, err := config.LoadDefaultConfig(context.TODO(), configOpts...)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	if cfg.Region == "" {
+		cfg.Region = "us-east-1"
+	}
+
+	if args.Debug {
+		log.Printf("AWS Region: %s", cfg.Region)
 	}
 
 	s3Client := s3.NewFromConfig(cfg)
