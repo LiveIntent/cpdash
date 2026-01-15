@@ -38,6 +38,7 @@ func main() {
 	flag.BoolVar(&args.Force, "f", false, "disable download limit")
 	flag.StringVar(&args.AwsProfile, "profile", "", "AWS profile to use")
 	flag.StringVar(&args.AwsRegion, "region", "", "AWS region to use")
+	flag.BoolVar(&args.UseDefaultCreds, "use-default-creds", false, "Use default AWS credential chain (for Kubernetes/IRSA)")
 
 	flag.Parse()
 
