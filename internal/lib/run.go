@@ -40,8 +40,9 @@ type Args struct {
 	Keys  bool
 	Debug bool
 
-	AwsProfile string
-	AwsRegion  string
+	AwsProfile      string
+	AwsRegion       string
+	UseDefaultCreds bool
 
 	UrlArg []string
 }
@@ -60,7 +61,7 @@ func Run(args Args) {
 	}
 
 	var configOpts []func(*config.LoadOptions) error
-	if args.AwsProfile != "" {
+	if !args.UseDefaultCreds && args.AwsProfile != "" {
 		configOpts = append(configOpts, config.WithSharedConfigProfile(args.AwsProfile))
 	}
 	if args.AwsRegion != "" {
