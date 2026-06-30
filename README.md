@@ -1,3 +1,9 @@
+> ⚠️ **This repository has moved.** Active development now lives on the Zeta
+> self-managed GitLab at
+> [`dwh-stack/data-infrastructure/cpdash`](https://gitlab.infr.zglbl.net/dwh-stack/data-infrastructure/cpdash)
+> (full history and tags preserved). This GitHub repository is **archived and
+> read-only** — please open issues and merge requests on GitLab.
+
 # Tool for dumping objects from s3 to stdout
 
 `cpdash` is a small cli tool for printing the content of objects on s3 to stdout. Objects will be gunzipped before printing, if that fails the raw content will be printed.
